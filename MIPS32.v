@@ -10,9 +10,9 @@ reg [31:0] EX_MEM_ALUOut, EX_MEM_B; // EX_MEM pipeline registers
 reg [31:0] MEM_WB_LMD, MEM_WB_ALUOut; // MEM_WB pipeline registers
 reg [5:0]  ID_EX_opcode,EX_MEM_opcode,MEM_WB_opcode; // opcode fields
 reg [4:0]  ID_EX_RD, EX_MEM_RD, MEM_WB_RD;
-reg  ID_EX_RegDst, ID_EX_ALUSrc, ID_EX_MemtoReg, ID_EX_RegWrite, ID_EX_MemRead, ID_EX_MemWrite;
-reg  EX_MEM_MemtoReg, EX_MEM_RegWrite, EX_MEM_MemRead, EX_MEM_MemWrite;
-reg  MEM_WB_MemtoReg, MEM_WB_RegWrite;
+reg  ID_EX_RegDst, ID_EX_ALUSrc, ID_EX_RegWrite, ID_EX_MemRead, ID_EX_MemWrite;
+reg  EX_MEM_RegWrite, EX_MEM_MemRead, EX_MEM_MemWrite;
+reg  MEM_WB_RegWrite;
 
 parameter ADD = 6'b000000, SUB = 6'b000001, AND = 6'b000010, OR = 6'b000011;
 parameter SLT = 6'b000100, MUL = 6'b000101, HLT = 6'b111111;
@@ -56,16 +56,52 @@ begin
     EX_MEM_opcode <= ID_EX_opcode;
 
     case (ID_EX_OPCODE)
-        ADD: EX_MEM_ALUOut <= ID_EX_A + ID_EX_B;
-        SUB: EX_MEM_ALUOut <= ID_EX_A - ID_EX_B;
-        AND: EX_MEM_ALUOut <= ID_EX_A & ID_EX_B;
-        OR:  EX_MEM_ALUOut <= ID_EX_A | ID_EX_B;
-        SLT: EX_MEM_ALUOut <= (ID_EX_A < ID_EX_B) ? 1 : 0;
-        MUL: EX_MEM_ALUOut <= ID_EX_A * ID_EX_B;
-        ADDI: EX_MEM_ALUOut <= ID_EX_A + ID_EX_IMM;
-        SUBI: EX_MEM_ALUOut <= ID_EX_A - ID_EX_IMM;
-        SLTI: EX_MEM_ALUOut <= (ID_EX_A < ID_EX_IMM) ? 1 : 0;
-        default: EX_MEM_ALUOut <= 0; // NOP for unrecognized opcode
+    ADD: begin
+        EX_MEM_ALUOut <= ID_EX_A + ID_EX_B;
+        EX_MEM_RegWrite <= 1;
+    end
+    SUB: begin
+        EX_MEM_ALUOut <= ID_EX_A - ID_EX_B;
+        EX_MEM_RegWrite <= 1;
+    end
+    AND: begin
+        EX_MEM_ALUOut <= ID_EX_A & ID_EX_B;
+        EX_MEM_RegWrite <= 1;
+    end
+    OR: begin
+        EX_MEM_ALUOut <= ID_EX_A | ID_EX_B;
+        EX_MEM_RegWrite <= 1;
+    end
+    SLT: begin
+        EX_MEM_ALUOut <= ((ID_EX_A) < (ID_EX_B)) ? 32'd1 : 32'd0;
+        EX_MEM_RegWrite <= 1;
+    end
+    MUL: begin
+        EX_MEM_ALUOut <= ID_EX_A * ID_EX_B;
+        EX_MEM_RegWrite <= 1;
+    end
+    ADDI: begin
+        EX_MEM_ALUOut <= ID_EX_A + ID_EX_IMM;
+        EX_MEM_RegWrite <= 1;
+    end
+    SUBI: begin
+        EX_MEM_ALUOut <= ID_EX_A - ID_EX_IMM;
+        EX_MEM_RegWrite <= 1;
+    end
+    SLTI: begin
+        EX_MEM_ALUOut <= ((ID_EX_A) < (ID_EX_IMM)) ? 32'd1 : 32'd0;
+        EX_MEM_RegWrite <= 1;
+    end
+    LW: begin
+     EX_MEM_ALUOut <= ID_EX_A + ID_EX_IMM; // Calculate address
+     EX_MEM_MemRead <= 1;
+     EX_MEM_RegWrite <= 1;
+    end
+    SW: begin
+        EX_MEM_ALUOut <= ID_EX_A + ID_EX_IMM; // Calculate address
+        EX_MEM_MemWrite <= 1;
+    end
+    default: EX_MEM_ALUOut <= 0; // NOP for unrecognized opcode
     endcase
     end 
 end
@@ -77,11 +113,16 @@ begin
     MEM_WB_opcode <= EX_MEM_opcode;
     MEM_WB_RD <= EX_MEM_RD;
     MEM_WB_ALUOut <= EX_MEM_ALUOut;
+    MEM_WB_RegWrite <= EX_MEM_RegWrite;
+    MEM_WB_MemRead <= EX_MEM_MemRead;
+    MEM_WB_MemWrite <= EX_MEM_MemWrite;
     case (EX_MEM_opcode)
         LW: begin
+        if (EX_MEM_MemRead)
             MEM_WB_LMD <= MEM[EX_MEM_ALUOut]; // Load from memory
         end
         SW: begin
+        if (EX_MEM_MemWrite)
             MEM[EX_MEM_ALUOut] <= EX_MEM_B; // Store to memory
         end
         default: begin
@@ -95,9 +136,11 @@ always @ (posedge clk)
 begin   
 case (MEM_WB_opcode)
     ADD, SUB, AND, OR, SLT, MUL, ADDI, SUBI, SLTI: begin
+        if (MEM_WB_RegWrite)        
         REG[MEM_WB_RD] <= MEM_WB_ALUOut; // Write back ALU result
     end
     LW: begin
+        if (MEM_WB_RegWrite)
         REG[MEM_WB_RD] <= MEM_WB_LMD; // Write back loaded data
     end
     HLT: begin
