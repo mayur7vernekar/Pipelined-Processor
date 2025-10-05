@@ -1,4 +1,7 @@
-module test_mips32;
+`include "MIPS32.v"
+
+
+module test1_mips32;
 
     // Signal declarations
     reg clk;
@@ -53,10 +56,12 @@ module test_mips32;
     initial begin
         // Set up waveform dumping to a VCD file
         $dumpfile("mips.vcd");
-        $dumpvars(0, test_mips32);
+        $dumpvars(0, test1_mips32);
 
         // End the simulation after a delay
         #300 $finish;
     end
 
 endmodule
+
+
