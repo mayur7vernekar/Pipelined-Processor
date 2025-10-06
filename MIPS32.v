@@ -32,7 +32,7 @@ begin
   end
 end
 
-always @ (posedge clk)
+always @ (negedge clk)
 begin
     if(HALTED == 0)
     begin
@@ -128,7 +128,7 @@ begin
     end 
 end
 
-always @ (posedge clk)
+always @ (negedge clk)
 begin
 if(HALTED == 0)
 begin
