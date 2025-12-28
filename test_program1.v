@@ -8,7 +8,7 @@ module test1_mips32;
     integer k;
 
     // Instantiate the MIPS processor module
-    MIPS32_processor mips (clk);
+    MIPS32_processor mips (clk,rst_n);
 
     // Clock generation block
     initial begin
