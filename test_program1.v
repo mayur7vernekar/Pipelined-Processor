@@ -1,14 +1,15 @@
-`include "MIPS32.v"
+`include "RISCV32.v"
 
 
-module test1_mips32;
+module test1_riscv32;
 
     // Signal declarations
     reg clk;
+    reg rst_n;
     integer k;
 
-    // Instantiate the MIPS processor module
-    MIPS32_processor mips (clk,rst_n);
+    // Instantiate the RISC-V RV32I processor module
+    RISCV32 riscv (clk, rst_n);
 
     // Clock generation block
     initial begin
@@ -22,41 +23,69 @@ module test1_mips32;
 
     // Test stimulus and processor initialization block
     initial begin
+        // Initialize reset signal
+        rst_n = 0;
+        #10 rst_n = 1;
+        
         // Initialize general-purpose registers
         for (k=0; k<32; k=k+1) begin
-            mips.REG[k] = k;
+            riscv.REG[k] = k;
         end
 
-        // Load the machine code into memory
-        mips.MEM[0] = 32'h2801000a;  // ADDI R1, R0, 10
-        mips.MEM[1] = 32'h28020014;  // ADDI R2, R0, 20
-        mips.MEM[2] = 32'h28030019;  // ADDI R3, R0, 25
-        mips.MEM[3] = 32'h0ce77800;  // OR R7, R7, R7 (dummy instr.)
-        mips.MEM[4] = 32'h0ce77800;  // OR R7, R7, R7 (dummy instr.)
-        mips.MEM[5] = 32'h00222000;  // ADD R4, R1, R2
-        mips.MEM[6] = 32'h0ce77800;  // OR R7, R7, R7 (dummy instr.)
-        mips.MEM[7] = 32'h00832800;  // ADD R5, R4, R3
-        mips.MEM[8] = 32'hfc000000;  // HLT
+        // Load the machine code into memory (RV32I format)
+        // ADDI x1, x0, 10     → x1 = 10
+        riscv.MEM[0] = 32'h00a00093;  // ADDI x1, x0, 10
+        
+        // ADDI x2, x0, 20     → x2 = 20
+        riscv.MEM[1] = 32'h01400113;  // ADDI x2, x0, 20
+        
+        // ADDI x3, x0, 25     → x3 = 25
+        riscv.MEM[2] = 32'h01900193;  // ADDI x3, x0, 25
+        
+        // ADD x4, x1, x2      → x4 = x1 + x2 = 30
+        riscv.MEM[3] = 32'h00208233;  // ADD x4, x1, x2
+        
+        // ADD x5, x4, x3      → x5 = x4 + x3 = 55
+        riscv.MEM[4] = 32'h003202b3;  // ADD x5, x4, x3
+        
+        // OR x6, x4, x5       → x6 = x4 | x5 = 55
+        riscv.MEM[5] = 32'h00526333;  // OR x6, x4, x5
+        
+        // ADDI x7, x0, 0      → x7 = 0
+        riscv.MEM[6] = 32'h00000393;  // ADDI x7, x0, 0
+        
+        // AND x7, x4, x5      → x7 = x4 & x5 = 22
+        riscv.MEM[7] = 32'h005273b3;  // AND x7, x4, x5
 
-        // Initialize processor state flags (assuming these exist in your module)
-        mips.HALTED = 0;
-        mips.PC = 0;
-        mips.TAKEN_BRANCH = 0;
+        // Initialize processor state flags
+        riscv.HALTED = 0;
+        riscv.PC = 0;
+        riscv.TAKEN_BRANCH = 0;
 
         // Wait for the program to execute
         #280;
 
-        // Display the values of the first 6 registers
-        for (k=0; k<6; k=k+1) begin
-            $display ("R%1d - %2d", k, mips.REG[k]);
+        // Display the values of the first 8 registers (x0-x7)
+        for (k=0; k<8; k=k+1) begin
+            $display ("x%1d (R%1d) - %2d", k, k, riscv.REG[k]);
         end
+        
+        // Display expected vs actual results
+        $display ("\n=== Test Results ===");
+        $display ("x1 should be 10, got: %d", riscv.REG[1]);
+        $display ("x2 should be 20, got: %d", riscv.REG[2]);
+        $display ("x3 should be 25, got: %d", riscv.REG[3]);
+        $display ("x4 should be 30, got: %d", riscv.REG[4]);
+        $display ("x5 should be 55, got: %d", riscv.REG[5]);
+        $display ("x6 should be 55, got: %d", riscv.REG[6]);
+        $display ("x7 should be 22, got: %d", riscv.REG[7]);
     end
 
     // Simulation control and waveform dumping
     initial begin
         // Set up waveform dumping to a VCD file
-        $dumpfile("mips.vcd");
-        $dumpvars(0, test1_mips32);
+        $dumpfile("riscv.vcd");
+        $dumpvars(0, test1_riscv32);
 
         // End the simulation after a delay
         #300 $finish;
