@@ -60,12 +60,7 @@ module RISCV32(
     wire BRANCH_DETECTED;
     wire [31:0] IMMEDIATE_ID;  // Immediate value computed in ID stage
 
-    // ==========================================
-    // RV32I Immediate Generator (4 Types)
-    // ==========================================
-    // Generates immediates for I-Type, S-Type, B-Type, and J-Type instructions
-    // Input: IF_ID_IR (32-bit instruction)
-    // Output: IMMEDIATE_ID (32-bit sign-extended immediate)
+    // Immediate Generator
     reg [31:0] immediate_value;
     assign IMMEDIATE_ID = immediate_value;
     
@@ -100,21 +95,11 @@ module RISCV32(
         endcase
     end
 
-    // ==========================================
-    // Hazard Detection Unit (HDU) - Updated for RV32I
-    // ==========================================
-    // Detect Load-Use Hazards:
-    // If instruction in EX stage is a Load (EX_MEM_MemRead=1) and
-    // its destination register (EX_MEM_RD) matches a source register
-    // in ID stage (IF_ID_IR[19:15] for rs1 or IF_ID_IR[24:20] for rs2),
-    // then stall the pipeline
+    // Hazard Detection Unit - Load-Use
     assign STALL = (EX_MEM_MemRead && EX_MEM_RD != 0) &&
                    (EX_MEM_RD == IF_ID_IR[19:15] || EX_MEM_RD == IF_ID_IR[24:20]);
 
-    // ==========================================
-    // Early Branch Resolution (ID Stage)
-    // ==========================================
-    // Detect branch instructions and compare operands in parallel
+    // Early Branch Resolution in ID Stage
     wire [31:0] RS1_ID, RS2_ID;
     assign RS1_ID = REG[IF_ID_IR[19:15]];
     assign RS2_ID = REG[IF_ID_IR[24:20]];
@@ -122,17 +107,9 @@ module RISCV32(
     wire branch_equal = (RS1_ID == RS2_ID);
     wire is_beq = (IF_ID_IR[6:0] == BEQ_OP) && (IF_ID_IR[14:12] == BEQ_FUNC);
     wire is_bne = (IF_ID_IR[6:0] == BNE_OP) && (IF_ID_IR[14:12] == BNE_FUNC);
-    
-    // Branch is taken if:
-    // (BEQ and values equal) or (BNE and values not equal)
     assign BRANCH_DETECTED = (is_beq && branch_equal) || (is_bne && !branch_equal);
 
-    // ==========================================
     // IF Stage: Instruction Fetch
-    // ==========================================
-    // Updated for early branch resolution:
-    // If branch is detected in ID stage (1 cycle early), update PC immediately
-    // Provides significant performance improvement vs delayed branch in EX stage
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             PC <= 32'b0;
@@ -141,29 +118,22 @@ module RISCV32(
             HALTED <= 0;
             TAKEN_BRANCH <= 0;
         end else if (!HALTED && !STALL) begin
-            // Normal operation: increment PC and fetch instruction
             IF_ID_IR <= MEM[PC];
             IF_ID_PC <= PC;
             
-            // Early branch resolution reduces penalty from 3 cycles to 1 cycle
             if (BRANCH_DETECTED) begin
-                PC <= IF_ID_PC + IMMEDIATE_ID;  // Update PC with branch target
+                PC <= IF_ID_PC + IMMEDIATE_ID;
                 TAKEN_BRANCH <= 1;
             end else begin
                 PC <= PC + 1;
                 TAKEN_BRANCH <= 0;
             end
         end else if (!HALTED && STALL) begin
-            // Stall: Freeze PC and IF/ID register, keep current values
-            // No update occurs - pipeline stage is frozen
+            // Pipeline frozen on load-use hazard
         end
     end
 
-    // ==========================================
-    // ID Stage: Instruction Decode (RV32I)
-    // ==========================================
-    // Stall Mechanism: When hazard detected, flush ID/EX control signals to zero (insert bubble)
-    // Branch Flush: When branch taken, flush IF stage instruction with 1-cycle penalty
+    // ID Stage: Instruction Decode & Register Read
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             ID_EX_PC <= 0;
@@ -174,19 +144,7 @@ module RISCV32(
             ID_EX_B <= 0;
             ID_EX_IMM <= 0;
             ID_EX_RD <= 0;
-        end else if (!HALTED && TAKEN_BRANCH) begin
-            // Branch was taken: Flush the instruction in IF stage (1-cycle penalty)
-            // This replaces the 3-cycle penalty from delayed branch resolution in EX stage
-            ID_EX_PC <= 0;
-            ID_EX_opcode <= 0;
-            ID_EX_funct3 <= 0;
-            ID_EX_funct7 <= 0;
-            ID_EX_A <= 0;
-            ID_EX_B <= 0;
-            ID_EX_IMM <= 0;
-            ID_EX_RD <= 0;
-        end else if (!HALTED && STALL) begin
-            // Stall detected: Insert a bubble by flushing all ID/EX signals to zero
+        end else if (!HALTED && (TAKEN_BRANCH || STALL)) begin
             ID_EX_PC <= 0;
             ID_EX_opcode <= 0;
             ID_EX_funct3 <= 0;
@@ -196,26 +154,14 @@ module RISCV32(
             ID_EX_IMM <= 0;
             ID_EX_RD <= 0;
         end else if (!HALTED && !STALL) begin
-            // Normal operation: Decode instruction and pass to next stage
             ID_EX_PC <= IF_ID_PC;
-            
-            // RV32I Opcode is at Instr[6:0] (7 bits)
             ID_EX_opcode <= IF_ID_IR[6:0];
-            
-            // Extract function codes
-            // funct3: Instr[14:12] - present in R-type, I-type, S-type, B-type
-            // funct7: Instr[31:25] - present in R-type only
             ID_EX_funct3 <= IF_ID_IR[14:12];
             ID_EX_funct7 <= IF_ID_IR[31:25];
             
-            // RV32I Register fields:
-            // rs1 (source register 1): Instr[19:15]
-            // rs2 (source register 2): Instr[24:20]
-            
-            // Forwarding Logic A (rs1)
-            // Priority: ID_EX (combinational ALU) > EX_MEM (pipeline) > MEM_WB (pipeline) > REG
+            // Data forwarding with priority: ID_EX > EX_MEM > MEM_WB > REG
             if ((ID_EX_will_write) && (ID_EX_RD != 0) && (ID_EX_RD == IF_ID_IR[19:15]))
-                ID_EX_A <= EX_ALUOut_comb;  // Forward directly from combinational ALU
+                ID_EX_A <= EX_ALUOut_comb;
             else if ((EX_MEM_RegWrite) && (EX_MEM_RD != 0) && (EX_MEM_RD == IF_ID_IR[19:15]))
                 ID_EX_A <= EX_MEM_ALUOut;
             else if ((MEM_WB_RegWrite) && (MEM_WB_RD != 0) && (MEM_WB_RD == IF_ID_IR[19:15]))
@@ -223,10 +169,8 @@ module RISCV32(
             else
                 ID_EX_A <= REG[IF_ID_IR[19:15]];
             
-            // Forwarding Logic B (rs2)
-            // Priority: ID_EX (combinational ALU) > EX_MEM (pipeline) > MEM_WB (pipeline) > REG
             if ((ID_EX_will_write) && (ID_EX_RD != 0) && (ID_EX_RD == IF_ID_IR[24:20]))
-                ID_EX_B <= EX_ALUOut_comb;  // Forward directly from combinational ALU
+                ID_EX_B <= EX_ALUOut_comb;
             else if ((EX_MEM_RegWrite) && (EX_MEM_RD != 0) && (EX_MEM_RD == IF_ID_IR[24:20]))
                 ID_EX_B <= EX_MEM_ALUOut;
             else if ((MEM_WB_RegWrite) && (MEM_WB_RD != 0) && (MEM_WB_RD == IF_ID_IR[24:20]))
@@ -234,22 +178,18 @@ module RISCV32(
             else
                 ID_EX_B <= REG[IF_ID_IR[24:20]];
             
-            // Immediate value from RV32I generator
             ID_EX_IMM <= IMMEDIATE_ID;
-            
-            // RV32I Destination Register Rd: Instr[11:7]
             ID_EX_RD <= IF_ID_IR[11:7];
         end
     end
 
-    // Combinational logic to determine if ID_EX instruction will write a register
+    // Data Forwarding - Check if ID_EX will write
     wire ID_EX_will_write;
     assign ID_EX_will_write = (ID_EX_opcode == ADD_OP) ||
                                (ID_EX_opcode == ADDI_OP) ||
                                (ID_EX_opcode == LW_OP);
     
-    // Combinational ALU for bypassing/forwarding
-    // Computes the ALU result from the current ID_EX values
+    // Combinational ALU for immediate forwarding
     reg [31:0] EX_ALUOut_comb;
     always @(*) begin
         EX_ALUOut_comb = 0;
@@ -291,9 +231,7 @@ module RISCV32(
         endcase
     end
 
-    // ==========================================
-    // EX Stage: Execution (RV32I)
-    // ==========================================
+    // EX Stage: Execution
     always @(posedge clk or negedge rst_n) begin   
         if (!rst_n) begin
             EX_MEM_RD <= 0;
@@ -309,49 +247,24 @@ module RISCV32(
             EX_MEM_B <= ID_EX_B;
             EX_MEM_opcode <= ID_EX_opcode;
             EX_MEM_funct3 <= ID_EX_funct3;
-            
             EX_MEM_RegWrite <= 0;
             EX_MEM_MemRead <= 0;
             EX_MEM_MemWrite <= 0;
-            
-            // Capture the combinationally computed ALU result
             EX_MEM_ALUOut <= EX_ALUOut_comb;
 
             case (ID_EX_opcode)
-                // R-Type Instructions (ADD, SUB, AND, OR, SLT)
-                ADD_OP: begin
-                    EX_MEM_RegWrite <= 1;
-                end
-                
-                // I-Type Instructions (ADDI, SLTI, LW)
-                ADDI_OP: begin
-                    EX_MEM_RegWrite <= 1;
-                end
-                
+                ADD_OP: EX_MEM_RegWrite <= 1;
+                ADDI_OP: EX_MEM_RegWrite <= 1;
                 LW_OP: begin
                     EX_MEM_MemRead <= 1;
                     EX_MEM_RegWrite <= 1;
                 end
-                
-                SW_OP: begin
-                    EX_MEM_MemWrite <= 1;
-                end
-                
-                // Branch instructions (BEQ, BNE) - Already resolved in ID stage
-                // No action needed in EX stage
-                BEQ_OP, BNE_OP: begin
-                    // Branches already handled in ID stage
-                end
-                
-                default: begin
-                end
+                SW_OP: EX_MEM_MemWrite <= 1;
             endcase
         end 
     end
 
-    // ==========================================
-    // MEM Stage: Memory Access (RV32I)
-    // ==========================================
+    // MEM Stage: Memory Access
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             MEM_WB_opcode <= 0;
@@ -370,44 +283,25 @@ module RISCV32(
             MEM_WB_MemWrite <= EX_MEM_MemWrite;
             
             case (EX_MEM_opcode)
-                LW_OP: begin
-                    if (EX_MEM_MemRead)
-                        MEM_WB_LMD <= MEM[EX_MEM_ALUOut];
-                end
-                SW_OP: begin
-                    if (EX_MEM_MemWrite)
-                        MEM[EX_MEM_ALUOut] <= EX_MEM_B;
-                end
+                LW_OP: if (EX_MEM_MemRead) MEM_WB_LMD <= MEM[EX_MEM_ALUOut];
+                SW_OP: if (EX_MEM_MemWrite) MEM[EX_MEM_ALUOut] <= EX_MEM_B;
                 default: MEM_WB_LMD <= 0;
             endcase
         end
     end
 
-    // ==========================================
-    // WB Stage: Write Back (RV32I)
-    // ==========================================
+    // WB Stage: Write Back
     always @(posedge clk or negedge rst_n) begin   
         if (!rst_n) begin
-            // Reset Registers to known state
             for (i=0; i<32; i=i+1) REG[i] <= 0;
         end else begin
-            // Write back results to register file
             if (MEM_WB_RegWrite && MEM_WB_RD != 0) begin
                 case (MEM_WB_opcode)
-                    // Load Word (write memory data)
-                    LW_OP: begin
-                        REG[MEM_WB_RD] <= MEM_WB_LMD;
-                    end
-                    
-                    // All other register-write opcodes (write ALU result)
-                    default: begin
-                        REG[MEM_WB_RD] <= MEM_WB_ALUOut;
-                    end
+                    LW_OP: REG[MEM_WB_RD] <= MEM_WB_LMD;
+                    default: REG[MEM_WB_RD] <= MEM_WB_ALUOut;
                 endcase
             end
-            
-            // Enforce x0 = 0 (x0 is hardwired to zero in RISC-V)
-            REG[0] <= 0;
+            REG[0] <= 0;  // x0 is hardwired to zero
         end
     end
 
