@@ -48,7 +48,7 @@ module test1_riscv32;
         // ADD x5, x4, x3      → x5 = x4 + x3 = 55
         riscv.MEM[4] = 32'h003202b3;  // ADD x5, x4, x3
         
-        // OR x6, x4, x5       → x6 = x4 | x5 = 55
+        // OR x6, x4, x5       → x6 = x4 | x5 = 63
         riscv.MEM[5] = 32'h00526333;  // OR x6, x4, x5
         
         // ADDI x7, x0, 0      → x7 = 0
@@ -77,8 +77,8 @@ module test1_riscv32;
         $display ("x3 should be 25, got: %d", riscv.REG[3]);
         $display ("x4 should be 30, got: %d", riscv.REG[4]);
         $display ("x5 should be 55, got: %d", riscv.REG[5]);
-        $display ("x6 should be 55, got: %d", riscv.REG[6]);
-        $display ("x7 should be 22, got: %d", riscv.REG[7]);
+        $display ("x6 should be 63, got: %d", riscv.REG[6]);  // 30 | 55 = 63
+        $display ("x7 should be 22, got: %d", riscv.REG[7]);  // 30 & 55 = 22
     end
 
     // Simulation control and waveform dumping

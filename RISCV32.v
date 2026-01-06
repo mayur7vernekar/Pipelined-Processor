@@ -15,6 +15,8 @@ module RISCV32(
     
     // Control Signals
     reg [6:0]  ID_EX_opcode, EX_MEM_opcode, MEM_WB_opcode;
+    reg [2:0]  ID_EX_funct3, EX_MEM_funct3;  // Function code for R-type and I-type instructions
+    reg [6:0]  ID_EX_funct7;                  // Function code extension for R-type instructions
     reg [4:0]  ID_EX_RD, EX_MEM_RD, MEM_WB_RD;
     reg        ID_EX_RegWrite, ID_EX_MemRead, ID_EX_MemWrite;
     reg        EX_MEM_RegWrite, EX_MEM_MemRead, EX_MEM_MemWrite;
@@ -166,6 +168,8 @@ module RISCV32(
         if (!rst_n) begin
             ID_EX_PC <= 0;
             ID_EX_opcode <= 0;
+            ID_EX_funct3 <= 0;
+            ID_EX_funct7 <= 0;
             ID_EX_A <= 0;
             ID_EX_B <= 0;
             ID_EX_IMM <= 0;
@@ -175,6 +179,8 @@ module RISCV32(
             // This replaces the 3-cycle penalty from delayed branch resolution in EX stage
             ID_EX_PC <= 0;
             ID_EX_opcode <= 0;
+            ID_EX_funct3 <= 0;
+            ID_EX_funct7 <= 0;
             ID_EX_A <= 0;
             ID_EX_B <= 0;
             ID_EX_IMM <= 0;
@@ -183,6 +189,8 @@ module RISCV32(
             // Stall detected: Insert a bubble by flushing all ID/EX signals to zero
             ID_EX_PC <= 0;
             ID_EX_opcode <= 0;
+            ID_EX_funct3 <= 0;
+            ID_EX_funct7 <= 0;
             ID_EX_A <= 0;
             ID_EX_B <= 0;
             ID_EX_IMM <= 0;
@@ -194,12 +202,21 @@ module RISCV32(
             // RV32I Opcode is at Instr[6:0] (7 bits)
             ID_EX_opcode <= IF_ID_IR[6:0];
             
+            // Extract function codes
+            // funct3: Instr[14:12] - present in R-type, I-type, S-type, B-type
+            // funct7: Instr[31:25] - present in R-type only
+            ID_EX_funct3 <= IF_ID_IR[14:12];
+            ID_EX_funct7 <= IF_ID_IR[31:25];
+            
             // RV32I Register fields:
             // rs1 (source register 1): Instr[19:15]
             // rs2 (source register 2): Instr[24:20]
             
             // Forwarding Logic A (rs1)
-            if ((EX_MEM_RegWrite) && (EX_MEM_RD != 0) && (EX_MEM_RD == IF_ID_IR[19:15]))
+            // Priority: ID_EX (combinational ALU) > EX_MEM (pipeline) > MEM_WB (pipeline) > REG
+            if ((ID_EX_will_write) && (ID_EX_RD != 0) && (ID_EX_RD == IF_ID_IR[19:15]))
+                ID_EX_A <= EX_ALUOut_comb;  // Forward directly from combinational ALU
+            else if ((EX_MEM_RegWrite) && (EX_MEM_RD != 0) && (EX_MEM_RD == IF_ID_IR[19:15]))
                 ID_EX_A <= EX_MEM_ALUOut;
             else if ((MEM_WB_RegWrite) && (MEM_WB_RD != 0) && (MEM_WB_RD == IF_ID_IR[19:15]))
                 ID_EX_A <= MEM_WB_ALUOut;
@@ -207,7 +224,10 @@ module RISCV32(
                 ID_EX_A <= REG[IF_ID_IR[19:15]];
             
             // Forwarding Logic B (rs2)
-            if ((EX_MEM_RegWrite) && (EX_MEM_RD != 0) && (EX_MEM_RD == IF_ID_IR[24:20]))
+            // Priority: ID_EX (combinational ALU) > EX_MEM (pipeline) > MEM_WB (pipeline) > REG
+            if ((ID_EX_will_write) && (ID_EX_RD != 0) && (ID_EX_RD == IF_ID_IR[24:20]))
+                ID_EX_B <= EX_ALUOut_comb;  // Forward directly from combinational ALU
+            else if ((EX_MEM_RegWrite) && (EX_MEM_RD != 0) && (EX_MEM_RD == IF_ID_IR[24:20]))
                 ID_EX_B <= EX_MEM_ALUOut;
             else if ((MEM_WB_RegWrite) && (MEM_WB_RD != 0) && (MEM_WB_RD == IF_ID_IR[24:20]))
                 ID_EX_B <= MEM_WB_ALUOut;
@@ -222,6 +242,55 @@ module RISCV32(
         end
     end
 
+    // Combinational logic to determine if ID_EX instruction will write a register
+    wire ID_EX_will_write;
+    assign ID_EX_will_write = (ID_EX_opcode == ADD_OP) ||
+                               (ID_EX_opcode == ADDI_OP) ||
+                               (ID_EX_opcode == LW_OP);
+    
+    // Combinational ALU for bypassing/forwarding
+    // Computes the ALU result from the current ID_EX values
+    reg [31:0] EX_ALUOut_comb;
+    always @(*) begin
+        EX_ALUOut_comb = 0;
+        case (ID_EX_opcode)
+            // R-Type Instructions
+            ADD_OP: begin
+                case (ID_EX_funct3)
+                    3'b000: begin
+                        if (ID_EX_funct7[5] == 1'b0)
+                            EX_ALUOut_comb = ID_EX_A + ID_EX_B;
+                        else
+                            EX_ALUOut_comb = ID_EX_A - ID_EX_B;
+                    end
+                    3'b111: EX_ALUOut_comb = ID_EX_A & ID_EX_B;
+                    3'b110: EX_ALUOut_comb = ID_EX_A | ID_EX_B;
+                    3'b010: EX_ALUOut_comb = ((ID_EX_A) < (ID_EX_B)) ? 32'd1 : 32'd0;
+                endcase
+            end
+            
+            // I-Type Instructions
+            ADDI_OP: begin
+                case (ID_EX_funct3)
+                    3'b000: EX_ALUOut_comb = ID_EX_A + ID_EX_IMM;
+                    3'b111: EX_ALUOut_comb = ID_EX_A & ID_EX_IMM;
+                    3'b110: EX_ALUOut_comb = ID_EX_A | ID_EX_IMM;
+                    3'b010: EX_ALUOut_comb = ((ID_EX_A) < (ID_EX_IMM)) ? 32'd1 : 32'd0;
+                endcase
+            end
+            
+            LW_OP: begin
+                EX_ALUOut_comb = ID_EX_A + ID_EX_IMM;
+            end
+            
+            SW_OP: begin
+                EX_ALUOut_comb = ID_EX_A + ID_EX_IMM;
+            end
+            
+            default: EX_ALUOut_comb = 0;
+        endcase
+    end
+
     // ==========================================
     // EX Stage: Execution (RV32I)
     // ==========================================
@@ -230,6 +299,7 @@ module RISCV32(
             EX_MEM_RD <= 0;
             EX_MEM_B <= 0;
             EX_MEM_opcode <= 0;
+            EX_MEM_funct3 <= 0;
             EX_MEM_RegWrite <= 0;
             EX_MEM_MemRead <= 0;
             EX_MEM_MemWrite <= 0;
@@ -238,49 +308,32 @@ module RISCV32(
             EX_MEM_RD <= ID_EX_RD;
             EX_MEM_B <= ID_EX_B;
             EX_MEM_opcode <= ID_EX_opcode;
+            EX_MEM_funct3 <= ID_EX_funct3;
             
             EX_MEM_RegWrite <= 0;
             EX_MEM_MemRead <= 0;
             EX_MEM_MemWrite <= 0;
+            
+            // Capture the combinationally computed ALU result
+            EX_MEM_ALUOut <= EX_ALUOut_comb;
 
             case (ID_EX_opcode)
                 // R-Type Instructions (ADD, SUB, AND, OR, SLT)
                 ADD_OP: begin
-                    case (ID_EX_IMM[14:12])  // Use funct3 from immediate placeholder for R-type
-                        3'b000: begin  // ADD or SUB (distinguished by funct7[5])
-                            if (ID_EX_IMM[30] == 1'b0)
-                                EX_MEM_ALUOut <= ID_EX_A + ID_EX_B;  // ADD
-                            else
-                                EX_MEM_ALUOut <= ID_EX_A - ID_EX_B;  // SUB
-                        end
-                        3'b111: EX_MEM_ALUOut <= ID_EX_A & ID_EX_B;   // AND
-                        3'b110: EX_MEM_ALUOut <= ID_EX_A | ID_EX_B;   // OR
-                        3'b010: EX_MEM_ALUOut <= ((ID_EX_A) < (ID_EX_B)) ? 32'd1 : 32'd0;  // SLT
-                    endcase
                     EX_MEM_RegWrite <= 1;
                 end
                 
                 // I-Type Instructions (ADDI, SLTI, LW)
                 ADDI_OP: begin
-                    case (ID_EX_IMM[14:12])  // funct3
-                        3'b000: EX_MEM_ALUOut <= ID_EX_A + ID_EX_IMM;  // ADDI
-                        3'b111: EX_MEM_ALUOut <= ID_EX_A & ID_EX_IMM;  // ANDI
-                        3'b110: EX_MEM_ALUOut <= ID_EX_A | ID_EX_IMM;  // ORI
-                        3'b010: EX_MEM_ALUOut <= ((ID_EX_A) < (ID_EX_IMM)) ? 32'd1 : 32'd0;  // SLTI
-                    endcase
                     EX_MEM_RegWrite <= 1;
                 end
                 
                 LW_OP: begin
-                    // Load Word: Calculate address = rs1 + immediate
-                    EX_MEM_ALUOut <= ID_EX_A + ID_EX_IMM;
                     EX_MEM_MemRead <= 1;
                     EX_MEM_RegWrite <= 1;
                 end
                 
                 SW_OP: begin
-                    // Store Word: Calculate address = rs1 + immediate
-                    EX_MEM_ALUOut <= ID_EX_A + ID_EX_IMM;
                     EX_MEM_MemWrite <= 1;
                 end
                 
@@ -288,10 +341,10 @@ module RISCV32(
                 // No action needed in EX stage
                 BEQ_OP, BNE_OP: begin
                     // Branches already handled in ID stage
-                    EX_MEM_ALUOut <= 0;
                 end
                 
-                default: EX_MEM_ALUOut <= 0;
+                default: begin
+                end
             endcase
         end 
     end
